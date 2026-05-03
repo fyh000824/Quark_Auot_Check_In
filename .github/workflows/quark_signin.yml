@@ -2,9 +2,9 @@ name: Quark签到
 
 on:
   schedule:
-    - cron: '0 1 * * *'   # 北京时间 09:00 (UTC+8 -> UTC+1)
-    - cron: '0 5 * * *'   # 北京时间 13:00 (UTC+8 -> UTC+5)
-  workflow_dispatch:      # 允许手动触发
+    - cron: '0 1 * * *'   # 北京时间 09:00
+    - cron: '0 5 * * *'   # 北京时间 13:00
+  workflow_dispatch:
 
 jobs:
   check-if-already-signed:
@@ -13,11 +13,11 @@ jobs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4  # 升级到 v4（支持 Node.js 24）
+        uses: actions/checkout@v4
 
       - name: 恢复签到成功记录缓存
         id: cache-success-restore
-        uses: actions/cache@v4  # v4 已支持 Node.js 24，无需升级
+        uses: actions/cache@v4
         with:
           path: .last_success_date
           key: last-success-marker
@@ -31,13 +31,16 @@ jobs:
             last_date=$(cat .last_success_date)
             echo "上次签到日期: $last_date"
             if [ "$last_date" = "$current_date" ]; then
-              echo "今天已成功签到，跳过执行。"
               echo "skip=false" >> "$GITHUB_OUTPUT"
-              exit 0
             fi
           fi
-          echo "今天尚未签到，继续执行。"
           echo "skip=true" >> "$GITHUB_OUTPUT"
+
+      # 已签到跳过通知
+      - name: Bark 今日已签到跳过
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          curl -s "https://api.day.app/5JUA4LkHRhW3gRQ85JV5t4/Quark签到/📅 今日已经签到，本次跳过"
 
   sign-in:
     needs: check-if-already-signed
@@ -45,23 +48,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4  # 升级到 v4（支持 Node.js 24）
+        uses: actions/checkout@v4
 
       - name: 随机延迟（早上）
         if: github.event.schedule == '0 1 * * *'
         run: |
           delay=$((RANDOM % 60))
-          echo "早上签到，延迟 $delay 秒后开始.."
           sleep $delay
       - name: 随机延迟（下午/手动触发）
         if: github.event.schedule == '0 5 * * *' || github.event_name == 'workflow_dispatch'
         run: |
           delay=$((RANDOM % 30))
-          echo "下午兜底或手动触发，延迟 $delay 秒后开始.."
           sleep $delay
 
       - name: 设置Python环境
-        uses: actions/setup-python@v5  # 升级到 v5（支持 Node.js 24）
+        uses: actions/setup-python@v5
         with:
           python-version: '3.x'
 
@@ -69,26 +70,41 @@ jobs:
         run: pip install requests
 
       - name: 执行签到脚本
+        id: run_task
+        continue-on-error: true
         env:
           COOKIE_QUARK: ${{ secrets.COOKIE_QUARK }}
         run: python checkIn_Quark.py
 
+      # 签到成功通知
+      - name: Bark 签到成功
+        if: steps.run_task.outcome == 'success'
+        run: |
+          curl -s "https://api.day.app/5JUA4LkHRhW3gRQ85JV5t4/Quark签到/✅ 夸克签到执行成功"
+
+      # 签到失败 + 带回错误信息
+      - name: 获取错误日志并推送Bark
+        if: steps.run_task.outcome == 'failure'
+        run: |
+          log=$(tail -n 20 /home/runner/work/_temp/*.log 2>/dev/null | head -n 5)
+          msg=${log:-脚本运行异常，自行查看工作流日志}
+          curl -s "https://api.day.app/5JUA4LkHRhW3gRQ85JV5t4/Quark签到/❌签到失败：${msg}"
+
       - name: 标记今天签到成功
-        if: success()
+        if: steps.run_task.outcome == 'success'
         run: |
           date_str=$(TZ='Asia/Shanghai' date '+%Y-%m-%d')
           echo "$date_str" > .last_success_date
-          echo "已记录成功签到日期: $date_str"
 
       - name: 保存成功记录到缓存
-        if: success()
-        uses: actions/cache@v4  # v4 已支持 Node.js 24，无需升级
+        if: steps.run_task.outcome == 'success'
+        uses: actions/cache@v4
         with:
           path: .last_success_date
           key: last-success-marker
 
       - name: 清理旧的工作流记录
-        uses: Mattraks/delete-workflow-runs@v2  # 升级到 v2（支持 Node.js 24）
+        uses: Mattraks/delete-workflow-runs@v2
         if: always()
         with:
           token: ${{ github.token }}
